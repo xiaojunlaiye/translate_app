@@ -2,6 +2,9 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -129,12 +132,13 @@ class TextTranslatePage extends StatefulWidget {
 
 class _TextTranslatePageState extends State<TextTranslatePage> {
   final TextEditingController _textController = TextEditingController();
-  final String backendBaseUrl = 'http://localhost:8000';
+  final String backendBaseUrl = 'http://summer.pink:8888';
   
   String _translatedText = '';
+  String _spokenStyleText = '';
+  String _writtenStyleText = '';
   bool _isLoading = false;
   String _selectedLanguage = 'English';
-  String _selectedStyle = '书面风格';
   
   // 支持的语言列表
   final Map<String, String> _languages = {
@@ -149,8 +153,27 @@ class _TextTranslatePageState extends State<TextTranslatePage> {
     'العربية': 'ar',
   };
 
-  // 翻译风格列表
-  final List<String> _translationStyles = ['书面风格', '口语风格'];
+  final ImagePicker _imagePicker = ImagePicker();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPrefs();
+  }
+
+  Future<void> _loadPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedLang = prefs.getString('selected_language');
+    if (savedLang != null && _languages.containsKey(savedLang)) {
+      _selectedLanguage = savedLang;
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _savePrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('selected_language', _selectedLanguage);
+  }
 
   Future<void> _translateText() async {
     if (_textController.text.trim().isEmpty) return;
@@ -160,25 +183,55 @@ class _TextTranslatePageState extends State<TextTranslatePage> {
     });
 
     try {
+      final payload = {
+        'text': _textController.text,
+        'target_language': _languages[_selectedLanguage],
+        'auto_detect': true,
+        'style': 'all',
+      };
+      print('POST /translate payload (text): ' + jsonEncode(payload));
       final response = await http.post(
         Uri.parse('$backendBaseUrl/translate'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'text': _textController.text,
-          'target_language': _languages[_selectedLanguage],
-          'auto_detect': true,
-          'style': _selectedStyle,
-        }),
+        body: jsonEncode(payload),
       );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        setState(() {
-          _translatedText = data['translated_text'] ?? '翻译失败';
-        });
+        final translatedText = data['translated_text'] ?? '翻译失败';
+        
+        // 解析两种风格的翻译结果
+        if (translatedText.contains('口语风格:') && translatedText.contains('书面风格:')) {
+          final parts = translatedText.split('\n');
+          String spokenStyle = '';
+          String writtenStyle = '';
+          
+          for (final part in parts) {
+            if (part.contains('口语风格:')) {
+              spokenStyle = part.replaceFirst('口语风格:', '').trim();
+            } else if (part.contains('书面风格:')) {
+              writtenStyle = part.replaceFirst('书面风格:', '').trim();
+            }
+          }
+          
+          setState(() {
+            _spokenStyleText = spokenStyle;
+            _writtenStyleText = writtenStyle;
+            _translatedText = ''; // 清空旧的翻译结果
+          });
+        } else {
+          // 如果返回格式不是预期的，显示原始结果
+          setState(() {
+            _translatedText = translatedText;
+            _spokenStyleText = '';
+            _writtenStyleText = '';
+          });
+        }
       } else {
         setState(() {
           _translatedText = '翻译失败: ${response.statusCode}';
+          _spokenStyleText = '';
+          _writtenStyleText = '';
         });
       }
     } catch (e) {
@@ -189,6 +242,31 @@ class _TextTranslatePageState extends State<TextTranslatePage> {
       setState(() {
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _scanTextFromCamera() async {
+    try {
+      final XFile? photo = await _imagePicker.pickImage(source: ImageSource.camera);
+      if (photo == null) return;
+      final inputImage = InputImage.fromFilePath(photo.path);
+      final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
+      final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
+      await textRecognizer.close();
+      final buffer = StringBuffer();
+      for (final block in recognizedText.blocks) {
+        buffer.writeln(block.text);
+      }
+      final scanned = buffer.toString().trim();
+      if (scanned.isNotEmpty) {
+        setState(() {
+          _textController.text = scanned;
+        });
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('扫描失败: $e')),
+      );
     }
   }
 
@@ -231,6 +309,7 @@ class _TextTranslatePageState extends State<TextTranslatePage> {
                           setState(() {
                             _selectedLanguage = newValue;
                           });
+                          _savePrefs();
                         }
                       },
                     ),
@@ -239,43 +318,6 @@ class _TextTranslatePageState extends State<TextTranslatePage> {
               ),
             ),
             
-            const SizedBox(height: 20),
-            
-            // 翻译风格选择器
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      '翻译风格',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    DropdownButton<String>(
-                      value: _selectedStyle,
-                      isExpanded: true,
-                      items: _translationStyles.map((String style) {
-                        return DropdownMenuItem<String>(
-                          value: style,
-                          child: Text(style),
-                        );
-                      }).toList(),
-                      onChanged: (String? newValue) {
-                        if (newValue != null) {
-                          setState(() {
-                            _selectedStyle = newValue;
-                          });
-                        }
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            
-            const SizedBox(height: 20),
             
             // 文本输入区域
             Card(
@@ -289,13 +331,36 @@ class _TextTranslatePageState extends State<TextTranslatePage> {
                       style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 16),
-                    TextField(
-                      controller: _textController,
-                      decoration: const InputDecoration(
-                        hintText: '请输入要翻译的文本',
-                        border: OutlineInputBorder(),
-                      ),
-                      maxLines: 5,
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _textController,
+                            decoration: const InputDecoration(
+                              hintText: '请输入要翻译的文本',
+                              border: OutlineInputBorder(),
+                            ),
+                            maxLines: 5,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Column(
+                          children: [
+                            SizedBox(
+                              height: 48,
+                              width: 48,
+                              child: ElevatedButton(
+                                onPressed: _scanTextFromCamera,
+                                style: ElevatedButton.styleFrom(
+                                  padding: EdgeInsets.zero,
+                                ),
+                                child: const Icon(Icons.camera_alt),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 16),
                     SizedBox(
@@ -323,7 +388,7 @@ class _TextTranslatePageState extends State<TextTranslatePage> {
               ),
             ),
             
-            if (_translatedText.isNotEmpty) ...[
+            if (_spokenStyleText.isNotEmpty || _writtenStyleText.isNotEmpty || _translatedText.isNotEmpty) ...[
               const SizedBox(height: 20),
               Card(
                 child: Padding(
@@ -336,19 +401,69 @@ class _TextTranslatePageState extends State<TextTranslatePage> {
                         style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                       ),
                       const SizedBox(height: 16),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.blue[50],
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.blue[200]!),
+                      
+                      // 口语风格翻译
+                      if (_spokenStyleText.isNotEmpty) ...[
+                        const Text(
+                          '口语风格',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.green),
                         ),
-                        child: Text(
-                          _translatedText,
-                          style: const TextStyle(fontSize: 16),
+                        const SizedBox(height: 8),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.green[50],
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.green[200]!),
+                          ),
+                          child: Text(
+                            _spokenStyleText,
+                            style: const TextStyle(fontSize: 16),
+                          ),
                         ),
-                      ),
+                        const SizedBox(height: 16),
+                      ],
+                      
+                      // 书面风格翻译
+                      if (_writtenStyleText.isNotEmpty) ...[
+                        const Text(
+                          '书面风格',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue),
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.blue[50],
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.blue[200]!),
+                          ),
+                          child: Text(
+                            _writtenStyleText,
+                            style: const TextStyle(fontSize: 16),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+                      
+                      // 原始翻译结果（如果格式不匹配）
+                      if (_translatedText.isNotEmpty) ...[
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.blue[50],
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.blue[200]!),
+                          ),
+                          child: Text(
+                            _translatedText,
+                            style: const TextStyle(fontSize: 16),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -370,7 +485,7 @@ class VoiceTranslatePage extends StatefulWidget {
 }
 
 class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
-  final String backendBaseUrl = 'http://localhost:8000';
+  final String backendBaseUrl = 'http://43.165.179.193:8888';
   
   // 语音相关
   final SpeechToText _speechToText = SpeechToText();
@@ -383,6 +498,7 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
   bool _isListening = false;
   bool _isPlaying = false;
   String _selectedLanguage = 'English';
+  String _selectedStyle = '书面风格';
   
   // 支持的语言列表
   final Map<String, String> _languages = {
@@ -397,11 +513,15 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
     'العربية': 'ar',
   };
 
+  // 翻译风格列表
+  final List<String> _translationStyles = ['书面风格', '口语风格'];
+
   @override
   void initState() {
     super.initState();
     _initSpeech();
     _initTts();
+    _loadPrefs();
   }
 
   Future<void> _initSpeech() async {
@@ -416,6 +536,27 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
     await _flutterTts.setSpeechRate(0.5);
     await _flutterTts.setVolume(1.0);
     await _flutterTts.setPitch(1.0);
+  }
+
+  Future<void> _loadPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedLang = prefs.getString('selected_language');
+    final savedStyle = prefs.getString('selected_style');
+    if (savedLang != null && _languages.containsKey(savedLang)) {
+      setState(() {
+        _selectedLanguage = savedLang;
+      });
+    }
+    if (savedStyle != null && _translationStyles.contains(savedStyle)) {
+      setState(() {
+        _selectedStyle = savedStyle;
+      });
+    }
+  }
+
+  Future<void> _savePrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('selected_language', _selectedLanguage);
   }
 
   Future<void> _startListening() async {
@@ -458,14 +599,17 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
     });
 
     try {
+      final payload = {
+        'text': _voiceInputText,
+        'target_language': _languages[_selectedLanguage],
+        'auto_detect': true,
+        'style': _selectedStyle,
+      };
+      print('POST /translate payload (voice): ' + jsonEncode(payload));
       final response = await http.post(
         Uri.parse('$backendBaseUrl/translate'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'text': _voiceInputText,
-          'target_language': _languages[_selectedLanguage],
-          'auto_detect': true,
-        }),
+        body: jsonEncode(payload),
       );
 
       if (response.statusCode == 200) {
@@ -519,7 +663,7 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 语言选择器
+            // 语言/风格选择器
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16.0),
@@ -545,6 +689,31 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
                           setState(() {
                             _selectedLanguage = newValue;
                           });
+                          _savePrefs();
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      '翻译风格',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    DropdownButton<String>(
+                      value: _selectedStyle,
+                      isExpanded: true,
+                      items: _translationStyles.map((String style) {
+                        return DropdownMenuItem<String>(
+                          value: style,
+                          child: Text(style),
+                        );
+                      }).toList(),
+                      onChanged: (String? newValue) {
+                        if (newValue != null) {
+                          setState(() {
+                            _selectedStyle = newValue;
+                          });
+                          _savePrefs();
                         }
                       },
                     ),

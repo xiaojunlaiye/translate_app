@@ -49,5 +49,7 @@
 	<string>This app uses speech recognition to translate your voice input into text for translation purposes.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This app needs access to your microphone to record voice input for translation.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>This app needs camera access to scan text for translation.</string>
 </dict>
 </plist>
