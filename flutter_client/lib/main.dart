@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -8,6 +9,8 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:record/record.dart';
+import 'package:path_provider/path_provider.dart';
 
 void main() {
   runApp(const MyApp());
@@ -132,14 +135,14 @@ class TextTranslatePage extends StatefulWidget {
 
 class _TextTranslatePageState extends State<TextTranslatePage> {
   final TextEditingController _textController = TextEditingController();
-  final String backendBaseUrl = 'http://summer.pink:8888';
+  final String backendBaseUrl = 'http://43.165.179.193:8888';
   
   String _translatedText = '';
   String _spokenStyleText = '';
   String _writtenStyleText = '';
   bool _isLoading = false;
   String _selectedTargetLanguage = 'English';
-  bool _isChineseToOther = true; // true: 中文→其他语言, false: 其他语言→中文
+  // 文字翻译固定为中文到其他语言
   
   // 支持的目标语言列表（除中文外）
   final Map<String, String> _targetLanguages = {
@@ -164,12 +167,8 @@ class _TextTranslatePageState extends State<TextTranslatePage> {
   Future<void> _loadPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     final savedTargetLang = prefs.getString('selected_target_language');
-    final savedDirection = prefs.getBool('is_chinese_to_other');
     if (savedTargetLang != null && _targetLanguages.containsKey(savedTargetLang)) {
       _selectedTargetLanguage = savedTargetLang;
-    }
-    if (savedDirection != null) {
-      _isChineseToOther = savedDirection;
     }
     if (mounted) setState(() {});
   }
@@ -177,7 +176,6 @@ class _TextTranslatePageState extends State<TextTranslatePage> {
   Future<void> _savePrefs() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('selected_target_language', _selectedTargetLanguage);
-    await prefs.setBool('is_chinese_to_other', _isChineseToOther);
   }
 
   Future<void> _translateText() async {
@@ -188,19 +186,9 @@ class _TextTranslatePageState extends State<TextTranslatePage> {
     });
 
     try {
-      // 根据翻译方向设置源语言和目标语言
-      String sourceLanguage;
-      String targetLanguage;
-      
-      if (_isChineseToOther) {
-        // 中文 → 其他语言
-        sourceLanguage = 'zh';
-        targetLanguage = _targetLanguages[_selectedTargetLanguage]!;
-      } else {
-        // 其他语言 → 中文
-        sourceLanguage = _targetLanguages[_selectedTargetLanguage]!;
-        targetLanguage = 'zh';
-      }
+      // 文字翻译固定为中文到其他语言
+      String sourceLanguage = 'zh';
+      String targetLanguage = _targetLanguages[_selectedTargetLanguage]!;
       
       final payload = {
         'text': _textController.text,
@@ -209,16 +197,28 @@ class _TextTranslatePageState extends State<TextTranslatePage> {
         'auto_detect': false, // 明确指定源语言，不使用自动检测
         'style': 'all',
       };
-      print('POST /translate payload (text): ' + jsonEncode(payload));
+      // 打印发送的数据
+      print('=== POST /translate 请求数据 (文字翻译) ===');
+      print('URL: $backendBaseUrl/translate');
+      print('Payload: ${jsonEncode(payload)}');
+      print('Content-Type: application/json');
+      print('==========================================');
       final response = await http.post(
         Uri.parse('$backendBaseUrl/translate'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(payload),
       );
 
+      // 响应日志
+      print('=== /translate 响应 (文字翻译) ===');
+      print('Status: ${response.statusCode}');
+      print('Body: ${response.body}');
+      print('==============================');
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        final translatedText = data['translated_text'] ?? '翻译失败';
+        // 兼容字段: translated_text 或 result
+        final translatedText = (data['translated_text'] ?? data['result'] ?? '').toString();
         
         // 解析两种风格的翻译结果
         if (translatedText.contains('口语风格:') && translatedText.contains('书面风格:')) {
@@ -303,7 +303,7 @@ class _TextTranslatePageState extends State<TextTranslatePage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 语言选择器和方向切换
+            // 语言选择器
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16.0),
@@ -313,129 +313,6 @@ class _TextTranslatePageState extends State<TextTranslatePage> {
                     const Text(
                       '翻译设置',
                       style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 16),
-                    
-                    // 翻译方向显示和切换 - 重新设计
-                    Column(
-                      children: [
-                        // 翻译方向指示器
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: Colors.blue[50],
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: Colors.blue[200]!),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              // 源语言
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: _isChineseToOther ? Colors.blue[500] : Colors.grey[300],
-                                  borderRadius: BorderRadius.circular(12),
-                                  boxShadow: _isChineseToOther ? [
-                                    BoxShadow(
-                                      color: Colors.blue[300]!,
-                                      blurRadius: 4,
-                                      spreadRadius: 1,
-                                    ),
-                                  ] : null,
-                                ),
-                                child: Text(
-                                  _isChineseToOther ? '中文' : _selectedTargetLanguage,
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                    color: _isChineseToOther ? Colors.white : Colors.grey[600],
-                                  ),
-                                ),
-                              ),
-                              
-                              // 箭头指示器
-                              Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 12),
-                                child: Icon(
-                                  Icons.arrow_forward,
-                                  color: Colors.blue[600],
-                                  size: 20,
-                                ),
-                              ),
-                              
-                              // 目标语言
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: !_isChineseToOther ? Colors.blue[500] : Colors.grey[300],
-                                  borderRadius: BorderRadius.circular(12),
-                                  boxShadow: !_isChineseToOther ? [
-                                    BoxShadow(
-                                      color: Colors.blue[300]!,
-                                      blurRadius: 4,
-                                      spreadRadius: 1,
-                                    ),
-                                  ] : null,
-                                ),
-                                child: Text(
-                                  !_isChineseToOther ? '中文' : _selectedTargetLanguage,
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                    color: !_isChineseToOther ? Colors.white : Colors.grey[600],
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        
-                        const SizedBox(height: 12),
-                        
-                        // 切换按钮 - 更醒目的设计
-                        GestureDetector(
-                          onTap: () {
-                            setState(() {
-                              _isChineseToOther = !_isChineseToOther;
-                            });
-                            _savePrefs();
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                            decoration: BoxDecoration(
-                              color: Colors.orange[500],
-                              borderRadius: BorderRadius.circular(25),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.orange[300]!,
-                                  blurRadius: 8,
-                                  spreadRadius: 2,
-                                ),
-                              ],
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  Icons.swap_horiz,
-                                  color: Colors.white,
-                                  size: 20,
-                                ),
-                                const SizedBox(width: 8),
-                                Text(
-                                  '切换翻译方向',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
                     ),
                     const SizedBox(height: 16),
                     
@@ -655,6 +532,7 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
   // 语音相关
   final SpeechToText _speechToText = SpeechToText();
   final FlutterTts _flutterTts = FlutterTts();
+  final AudioRecorder _audioRecorder = AudioRecorder();
   
   // 状态管理
   String _voiceInputText = '';
@@ -664,6 +542,7 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
   bool _autoTranslate = true;
   bool _isRecording = false;
   bool _isChineseToOther = true; // true: 中文→其他语言, false: 其他语言→中文
+  String? _audioPath;
   
   // 对话历史
   List<ConversationMessage> _conversationHistory = [];
@@ -750,37 +629,157 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
       return;
     }
 
-    setState(() {
-      _isRecording = true;
-      _voiceInputText = '';
-    });
+    try {
+      // 获取临时目录
+      final directory = await getTemporaryDirectory();
+      final fileName = 'audio_${DateTime.now().millisecondsSinceEpoch}.wav';
+      _audioPath = '${directory.path}/$fileName';
+      
+      setState(() {
+        _isRecording = true;
+        _voiceInputText = '';
+      });
 
-    await _speechToText.listen(
-      onResult: (result) {
-        setState(() {
-          _voiceInputText = result.recognizedWords;
-        });
-      },
-    );
+      // 开始录音
+      await _audioRecorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.wav,
+          sampleRate: 44100,
+          bitRate: 128000,
+        ),
+        path: _audioPath!,
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('开始录音失败: $e')),
+      );
+      setState(() {
+        _isRecording = false;
+      });
+    }
   }
 
   Future<void> _stopRecording() async {
-    await _speechToText.stop();
+    try {
+      await _audioRecorder.stop();
+      setState(() {
+        _isRecording = false;
+      });
+      
+      if (_audioPath != null && File(_audioPath!).existsSync()) {
+        await _recognizeSpeech();
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('停止录音失败: $e')),
+      );
+      setState(() {
+        _isRecording = false;
+      });
+    }
+  }
+
+  // 语音识别API调用
+  Future<void> _recognizeSpeech() async {
     setState(() {
-      _isRecording = false;
+      _isLoading = true;
     });
-    
-    if (_voiceInputText.isNotEmpty) {
-      if (_autoTranslate) {
-        await _translateVoiceInput();
+
+    try {
+      // 读取音频文件
+      final audioFile = File(_audioPath!);
+      final audioBytes = await audioFile.readAsBytes();
+      
+      // 根据翻译方向设置源语言
+      String sourceLanguage;
+      if (_isChineseToOther) {
+        sourceLanguage = 'zh'; // 中文
       } else {
-        // 如果不自动翻译，只显示识别结果，等待用户手动翻译
+        sourceLanguage = _targetLanguages[_selectedTargetLanguage]!; // 其他语言
+      }
+      
+      // 创建multipart请求
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$backendBaseUrl/speech_to_text'),
+      );
+      
+      // 添加音频文件
+      request.files.add(
+        http.MultipartFile.fromBytes(
+          'audio',
+          audioBytes,
+          filename: 'audio.wav',
+        ),
+      );
+      
+      // 添加语言参数
+      request.fields['language'] = sourceLanguage;
+      
+      // 打印发送的数据
+      print('=== POST /speech_to_text 请求数据 ===');
+      print('URL: $backendBaseUrl/speech_to_text');
+      print('Language: $sourceLanguage');
+      print('Audio file size: ${audioBytes.length} bytes');
+      print('Audio filename: audio.wav');
+      print('Content-Type: multipart/form-data');
+      print('=====================================');
+      
+      // 发送请求
+      var streamedResponse = await request.send();
+      var response = await http.Response.fromStream(streamedResponse);
+      // 响应日志
+      print('=== /speech_to_text 响应 ===');
+      print('Status: ${response.statusCode}');
+      print('Body: ${response.body}');
+      print('===========================');
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        // 兼容字段: text 或 result 或 transcript
+        final recognizedText = (data['text'] ?? data['result'] ?? data['transcript'] ?? '').toString().trim();
+        
+        // 更新语音输入文本
+        setState(() {
+          _voiceInputText = recognizedText.isNotEmpty ? recognizedText : '识别失败';
+        });
+        
+        // 添加到对话历史，等待用户手动翻译
         _addMessageToHistory(_voiceInputText, '点击翻译', true);
+      } else {
+        final errorText = '语音识别失败: ${response.statusCode} ${response.body}';
+        _addMessageToHistory('语音识别失败', errorText, true);
+      }
+    } catch (e) {
+      final errorText = '语音识别错误: $e';
+      _addMessageToHistory('语音识别失败', errorText, true);
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+      
+      // 清理临时音频文件
+      if (_audioPath != null && File(_audioPath!).existsSync()) {
+        await File(_audioPath!).delete();
+        _audioPath = null;
       }
     }
   }
 
-  Future<void> _translateVoiceInput() async {
+  // 添加消息到对话历史
+  void _addMessageToHistory(String originalText, String translatedText, bool isFromUser) {
+    setState(() {
+      _conversationHistory.add(ConversationMessage(
+        originalText: originalText,
+        translatedText: translatedText,
+        isFromUser: isFromUser,
+        timestamp: DateTime.now(),
+      ));
+    });
+  }
+
+  // 翻译文本
+  Future<void> _translateText(String text) async {
     setState(() {
       _isLoading = true;
     });
@@ -801,50 +800,88 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
       }
       
       final payload = {
-        'text': _voiceInputText,
+        'text': text,
         'source_language': sourceLanguage,
         'target_language': targetLanguage,
         'auto_detect': false, // 明确指定源语言，不使用自动检测
         'style': _selectedStyle,
       };
-      print('POST /translate payload (voice): ' + jsonEncode(payload));
+      // 打印发送的数据
+      print('=== POST /translate 请求数据 ===');
+      print('URL: $backendBaseUrl/translate');
+      print('Payload: ${jsonEncode(payload)}');
+      print('Content-Type: application/json');
+      print('===============================');
       final response = await http.post(
         Uri.parse('$backendBaseUrl/translate'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(payload),
       );
 
+      // 响应日志
+      print('=== /translate 响应 (语音翻译) ===');
+      print('Status: ${response.statusCode}');
+      print('Body: ${response.body}');
+      print('============================');
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        final translatedText = data['translated_text'] ?? '翻译失败';
+        // 兼容字段: translated_text 或 result
+        final translatedText = (data['translated_text'] ?? data['result'] ?? '').toString();
         
-        // 添加到对话历史
-        _addMessageToHistory(_voiceInputText, translatedText, true);
+        // 更新对话历史中的翻译结果
+        setState(() {
+          for (int i = 0; i < _conversationHistory.length; i++) {
+            if (_conversationHistory[i].originalText == text && 
+                _conversationHistory[i].translatedText == '点击翻译') {
+              _conversationHistory[i] = ConversationMessage(
+                originalText: _conversationHistory[i].originalText,
+                translatedText: translatedText,
+                isFromUser: _conversationHistory[i].isFromUser,
+                timestamp: _conversationHistory[i].timestamp,
+              );
+              break;
+            }
+          }
+        });
       } else {
-        final errorText = '翻译失败: ${response.statusCode}';
-        _addMessageToHistory(_voiceInputText, errorText, true);
+        // 更新为错误信息，附带后端返回内容
+        setState(() {
+          for (int i = 0; i < _conversationHistory.length; i++) {
+            if (_conversationHistory[i].originalText == text && 
+                _conversationHistory[i].translatedText == '点击翻译') {
+              _conversationHistory[i] = ConversationMessage(
+                originalText: _conversationHistory[i].originalText,
+                translatedText: '翻译失败: ${response.statusCode} ${response.body}',
+                isFromUser: _conversationHistory[i].isFromUser,
+                timestamp: _conversationHistory[i].timestamp,
+              );
+              break;
+            }
+          }
+        });
       }
     } catch (e) {
-      final errorText = '翻译错误: $e';
-      _addMessageToHistory(_voiceInputText, errorText, true);
+      // 更新为错误信息
+      setState(() {
+        for (int i = 0; i < _conversationHistory.length; i++) {
+          if (_conversationHistory[i].originalText == text && 
+              _conversationHistory[i].translatedText == '点击翻译') {
+            _conversationHistory[i] = ConversationMessage(
+              originalText: _conversationHistory[i].originalText,
+              translatedText: '翻译错误: $e',
+              isFromUser: _conversationHistory[i].isFromUser,
+              timestamp: _conversationHistory[i].timestamp,
+            );
+            break;
+          }
+        }
+      });
     } finally {
       setState(() {
         _isLoading = false;
       });
     }
-  }
-
-
-  // 添加消息到对话历史
-  void _addMessageToHistory(String originalText, String translatedText, bool isFromUser) {
-    setState(() {
-      _conversationHistory.add(ConversationMessage(
-        originalText: originalText,
-        translatedText: translatedText,
-        isFromUser: isFromUser,
-        timestamp: DateTime.now(),
-      ));
-    });
   }
 
   // 构建消息气泡
@@ -903,6 +940,23 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
                       ),
                     ),
                   ),
+                  // 如果是待翻译状态，显示翻译按钮
+                  if (message.isFromUser && message.translatedText == '点击翻译') ...[
+                    const SizedBox(height: 8),
+                    ElevatedButton.icon(
+                      onPressed: () => _translateText(message.originalText),
+                      icon: const Icon(Icons.translate, size: 16),
+                      label: const Text('翻译'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orange[500],
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -1090,21 +1144,6 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
                     ],
                   ),
                 ),
-                // 自动翻译开关
-                Row(
-                  children: [
-                    const Text('自动翻译'),
-                    Switch(
-                      value: _autoTranslate,
-                      onChanged: (value) {
-                        setState(() {
-                          _autoTranslate = value;
-                        });
-                        _savePrefs();
-                      },
-                    ),
-                  ],
-                ),
               ],
             ),
           ),
@@ -1163,37 +1202,114 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
                     ),
                   ),
                 
-                // 录音按钮
-                GestureDetector(
-                  onLongPressStart: (_) => _startRecording(),
-                  onLongPressEnd: (_) => _stopRecording(),
-                  child: Container(
-                    width: 80,
-                    height: 80,
-                    decoration: BoxDecoration(
-                      color: _isRecording ? Colors.red : Colors.blue,
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: (_isRecording ? Colors.red : Colors.blue).withOpacity(0.3),
-                          blurRadius: 8,
-                          spreadRadius: 2,
+                // 录音按钮 - 优化UI
+                Center(
+                  child: Column(
+                    children: [
+                      // 录音按钮
+                      GestureDetector(
+                        onLongPressStart: (_) => _startRecording(),
+                        onLongPressEnd: (_) => _stopRecording(),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          width: _isRecording ? 100 : 90,
+                          height: _isRecording ? 100 : 90,
+                          decoration: BoxDecoration(
+                            gradient: _isRecording 
+                                ? LinearGradient(
+                                    colors: [Colors.red[400]!, Colors.red[600]!],
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                  )
+                                : LinearGradient(
+                                    colors: [Colors.blue[400]!, Colors.blue[600]!],
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                  ),
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: (_isRecording ? Colors.red : Colors.blue).withOpacity(0.4),
+                                blurRadius: _isRecording ? 20 : 15,
+                                spreadRadius: _isRecording ? 3 : 2,
+                                offset: const Offset(0, 4),
+                              ),
+                              BoxShadow(
+                                color: Colors.white.withOpacity(0.8),
+                                blurRadius: 2,
+                                spreadRadius: -1,
+                                offset: const Offset(0, -1),
+                              ),
+                            ],
+                          ),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Colors.white.withOpacity(0.3),
+                                width: 2,
+                              ),
+                            ),
+                            child: Icon(
+                              _isRecording ? Icons.stop_rounded : Icons.mic_rounded,
+                              color: Colors.white,
+                              size: _isRecording ? 36 : 32,
+                            ),
+                          ),
                         ),
-                      ],
-                    ),
-                    child: Icon(
-                      _isRecording ? Icons.stop : Icons.mic,
-                      color: Colors.white,
-                      size: 32,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _isRecording ? '松开结束录音' : '长按录音',
-                  style: TextStyle(
-                    color: _isRecording ? Colors.red : Colors.grey[600],
-                    fontSize: 14,
+                      ),
+                      
+                      const SizedBox(height: 16),
+                      
+                      // 录音状态指示器
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: _isRecording ? Colors.red[50] : Colors.blue[50],
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: _isRecording ? Colors.red[200]! : Colors.blue[200]!,
+                            width: 1,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (_isRecording) ...[
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: BoxDecoration(
+                                  color: Colors.red[500],
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                            ],
+                            Text(
+                              _isRecording ? '正在录音...' : '长按开始录音',
+                              style: TextStyle(
+                                color: _isRecording ? Colors.red[700] : Colors.blue[700],
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      
+                      const SizedBox(height: 8),
+                      
+                      // 提示文字
+                      Text(
+                        _isRecording ? '松开结束录音' : '松开后点击翻译按钮',
+                        style: TextStyle(
+                          color: Colors.grey[600],
+                          fontSize: 12,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
                   ),
                 ),
               ],
