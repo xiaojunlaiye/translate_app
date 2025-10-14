@@ -690,13 +690,7 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
       final audioFile = File(_audioPath!);
       final audioBytes = await audioFile.readAsBytes();
       
-      // 根据翻译方向设置源语言
-      String sourceLanguage;
-      if (_isChineseToOther) {
-        sourceLanguage = 'zh'; // 中文
-      } else {
-        sourceLanguage = _targetLanguages[_selectedTargetLanguage]!; // 其他语言
-      }
+      // 语言由后端自动识别（不在此处指定）
       
       // 创建multipart请求
       var request = http.MultipartRequest(
@@ -714,12 +708,12 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
       );
       
       // 添加语言参数
-      request.fields['language'] = sourceLanguage;
+      request.fields['language'] = 'auto';
       
       // 打印发送的数据
       print('=== POST /speech_to_text 请求数据 ===');
       print('URL: $backendBaseUrl/speech_to_text');
-      print('Language: $sourceLanguage');
+      print('Language: auto');
       print('Audio file size: ${audioBytes.length} bytes');
       print('Audio filename: audio.wav');
       print('Content-Type: multipart/form-data');
@@ -738,14 +732,20 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
         final data = jsonDecode(response.body);
         // 兼容字段: text 或 result 或 transcript
         final recognizedText = (data['text'] ?? data['result'] ?? data['transcript'] ?? '').toString().trim();
-        
-        // 更新语音输入文本
+
+        final finalText = recognizedText.isNotEmpty ? recognizedText : '识别失败';
         setState(() {
-          _voiceInputText = recognizedText.isNotEmpty ? recognizedText : '识别失败';
+          _voiceInputText = finalText;
         });
-        
-        // 添加到对话历史，等待用户手动翻译
-        _addMessageToHistory(_voiceInputText, '点击翻译', true);
+
+        if (_autoTranslate && finalText.isNotEmpty && finalText != '识别失败') {
+          // 展示占位并自动翻译
+          _addMessageToHistory(finalText, '翻译中...', true);
+          await _translateText(finalText);
+        } else {
+          // 仅展示识别文本，不占用额外空间
+          _addMessageToHistory(finalText, '', true);
+        }
       } else {
         final errorText = '语音识别失败: ${response.statusCode} ${response.body}';
         _addMessageToHistory('语音识别失败', errorText, true);
@@ -833,7 +833,7 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
         setState(() {
           for (int i = 0; i < _conversationHistory.length; i++) {
             if (_conversationHistory[i].originalText == text && 
-                _conversationHistory[i].translatedText == '点击翻译') {
+                (_conversationHistory[i].translatedText.isEmpty || _conversationHistory[i].translatedText == '翻译中...')) {
               _conversationHistory[i] = ConversationMessage(
                 originalText: _conversationHistory[i].originalText,
                 translatedText: translatedText,
@@ -849,7 +849,7 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
         setState(() {
           for (int i = 0; i < _conversationHistory.length; i++) {
             if (_conversationHistory[i].originalText == text && 
-                _conversationHistory[i].translatedText == '点击翻译') {
+                (_conversationHistory[i].translatedText.isEmpty || _conversationHistory[i].translatedText == '翻译中...')) {
               _conversationHistory[i] = ConversationMessage(
                 originalText: _conversationHistory[i].originalText,
                 translatedText: '翻译失败: ${response.statusCode} ${response.body}',
@@ -866,7 +866,7 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
       setState(() {
         for (int i = 0; i < _conversationHistory.length; i++) {
           if (_conversationHistory[i].originalText == text && 
-              _conversationHistory[i].translatedText == '点击翻译') {
+              (_conversationHistory[i].translatedText.isEmpty || _conversationHistory[i].translatedText == '翻译中...')) {
             _conversationHistory[i] = ConversationMessage(
               originalText: _conversationHistory[i].originalText,
               translatedText: '翻译错误: $e',
@@ -925,34 +925,19 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
                   ),
                   const SizedBox(height: 4),
                   // 翻译
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: message.isFromUser ? Colors.blue[100] : Colors.grey[100],
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    child: Text(
-                      message.translatedText,
-                      style: TextStyle(
-                        color: message.isFromUser ? Colors.blue[800] : Colors.black87,
-                        fontSize: 16,
-                        fontStyle: FontStyle.italic,
+                  if (message.translatedText.isNotEmpty) ...[
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: message.isFromUser ? Colors.blue[100] : Colors.grey[100],
+                        borderRadius: BorderRadius.circular(18),
                       ),
-                    ),
-                  ),
-                  // 如果是待翻译状态，显示翻译按钮
-                  if (message.isFromUser && message.translatedText == '点击翻译') ...[
-                    const SizedBox(height: 8),
-                    ElevatedButton.icon(
-                      onPressed: () => _translateText(message.originalText),
-                      icon: const Icon(Icons.translate, size: 16),
-                      label: const Text('翻译'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.orange[500],
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(20),
+                      child: Text(
+                        message.translatedText,
+                        style: TextStyle(
+                          color: message.isFromUser ? Colors.blue[800] : Colors.black87,
+                          fontSize: 16,
+                          fontStyle: FontStyle.italic,
                         ),
                       ),
                     ),
@@ -1097,50 +1082,7 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
                         ),
                       ),
                       
-                      const SizedBox(height: 12),
-                      
-                      // 切换按钮 - 更醒目的设计
-                      GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            _isChineseToOther = !_isChineseToOther;
-                          });
-                          _savePrefs();
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                          decoration: BoxDecoration(
-                            color: Colors.orange[500],
-                            borderRadius: BorderRadius.circular(25),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.orange[300]!,
-                                blurRadius: 8,
-                                spreadRadius: 2,
-                              ),
-                            ],
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.swap_horiz,
-                                color: Colors.white,
-                                size: 20,
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                '切换翻译方向',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
+                      // 已移除“切换翻译方向”按钮，方向由后端自动识别语种后在翻译阶段决定
                     ],
                   ),
                 ),
@@ -1197,7 +1139,7 @@ class _VoiceTranslatePageState extends State<VoiceTranslatePage> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         ),
                         SizedBox(width: 8),
-                        Text('正在翻译...'),
+                        Text('正在获取语音识别结果...'),
                       ],
                     ),
                   ),
